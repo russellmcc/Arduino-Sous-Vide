@@ -1,9 +1,15 @@
+#include "lcd_stuff.h"
+
+int tempPotPin = 2;    // tempPotPin
 int analogPin = 3;     // temperature sensor
 int digitalPin = 8;    // relay
+int turboPin = 6;      // turbo!
 int ledPin = 13;       // on actual arduino boards this is pre-hooked up.
-float targetTemp = 133; // target temperature
+float targetTemp = 134; // target temperature
+float loTemp = 120; // lowest temperature we can set
+float hiTemp = 160; // highest temperature we can set
 float cookTime = 2400000; // 40 minutes cook time (milliseconds)
-
+float timeElapsed = 0;
 // All times in milliseconds.
 
 // relay flipping state
@@ -44,8 +50,17 @@ void setup()
   pinMode(ledPin, OUTPUT);   
   pinMode(digitalPin, OUTPUT);
   digitalWrite(digitalPin, LOW);
+  pinMode(turboPin, INPUT);
+  digitalWrite(turboPin, HIGH);
+  
+  lcd_init();
+  
+  int val = analogRead(analogPin);    // read the input pin
+  float temp = (((float)val) / 930.0) * 100;
+  temp = temp * 1.8 + 32;
+  
   for(int i= 0; i < numTemps; ++i)
-    temps[i] = 0;
+    temps[i] = temp;
 }
 
 void SendMessage(char prefix, float message)
@@ -54,34 +69,20 @@ void SendMessage(char prefix, float message)
   Serial.println(message);
 }
 
-void loop()
+float aveTemp = 0;
+float dAve = 0;
+
+void heating_regime()
 {
-  int val = analogRead(analogPin);    // read the input pin
-  float temp = (((float)val) / 930.0) * 100;
-  temp = temp * 1.8 + 32;
-  
-  temps[tempCount++] = temp;
-  tempCount = tempCount % numTemps;
- 
-  float aveTemp = 0;
-  for(int i = 0; i < numTemps; ++i)
-   aveTemp += temps[i];
-  aveTemp /= numTemps; 
-  
-  float dAve = 0;
-  for(int i = 0; i < numTemps - 1; ++i)
-    dAve += temps[i + 1] - temps[i];
-  dAve /= numTemps - 1;  
-  
-  delay(delayTime);  
-    
-  if(mode == 0)
-  {
       digitalWrite(ledPin, HIGH);
       digitalWrite(digitalPin, HIGH);
       SendMessage('A', aveTemp);
-
       SendMessage('B', dAve);
+      lcd_start_sending_numbers();
+      lcd_send_number(aveTemp, 3, 1);
+      lcd_send_number(targetTemp, 3, 0);
+      lcd_send_oburt();
+      lcd_stop_sending_numbers();
       if(aveTemp + (dAve * warmUpTime / delayTime) > targetTemp)
       {
         digitalWrite(digitalPin, LOW);
@@ -92,8 +93,10 @@ void loop()
         mode = 1;
         delay(coolDownTime);
       }
-  }
-  else
+}
+
+void main_regime()
+{
   {
 
     numSinceFlip++;
@@ -124,13 +127,23 @@ void loop()
     
     // Deal with cooking timer.
     if(error < tempDiffForCook)
+    {
       cookTime -= delayTime;
+      timeElapsed += delayTime;
+    }
     if(cookTime < 0)
       doneCooking = 1;
     
     // Only do the rest at the relay rate.
     if(numSinceFlip * delayTime < relayRate)
       return;
+ 
+    lcd_start_sending_numbers();
+    lcd_send_number(aveTemp, 3, 1);
+    lcd_send_number(targetTemp, 3, 0);
+    lcd_send_number(timeElapsed / 1000 / 60, 3, 0);
+    lcd_send_number((threshold / thresholdClip) * 99, 2, 0);
+    lcd_stop_sending_numbers();
  
     SendMessage('A', aveTemp);
     SendMessage('B', kp);
@@ -175,5 +188,55 @@ void loop()
         digitalWrite(ledPin, HIGH);
     }
   }
+}
+
+void turbo_mode()
+{
+      digitalWrite(ledPin, HIGH);
+      digitalWrite(digitalPin, HIGH);
+      SendMessage('A', aveTemp);
+      SendMessage('B', dAve);
+      lcd_start_sending_numbers();
+      lcd_send_number(aveTemp, 3, 1);
+      lcd_send_number(targetTemp, 3, 0);
+      lcd_send_turbo();
+      lcd_stop_sending_numbers();  
+      lastState = 1;
+      mode = 1;
+}
+
+void loop()
+{
+  int val = analogRead(analogPin);    // read the input pin
+  float temp = (((float)val) / 930.0) * 100;
+  temp = temp * 1.8 + 32;
+  
+  temps[tempCount++] = temp;
+  tempCount = tempCount % numTemps;
+ 
+  aveTemp = 0;
+  for(int i = 0; i < numTemps; ++i)
+   aveTemp += temps[i];
+  aveTemp /= numTemps; 
+  
+  dAve = 0;
+  for(int i = 0; i < numTemps - 1; ++i)
+    dAve += temps[i + 1] - temps[i];
+  dAve /= numTemps - 1;  
+  
+  // read target
+  int targetVal = analogRead(tempPotPin);
+  targetTemp = loTemp + (hiTemp - loTemp) * ((float)targetVal) / 1023;
+    
+  int turbo = digitalRead(turboPin);
+  
+  if(not turbo)
+    turbo_mode();
+  else if(mode == 0)
+    heating_regime();
+  else
+    main_regime();
+    
+  delay(delayTime);  
 }
 
